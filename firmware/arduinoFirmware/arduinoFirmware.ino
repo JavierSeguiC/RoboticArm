@@ -11,6 +11,7 @@ const int GRIPPER_PIN = 6;
 
 // EEPROM Addresses
 const int ADDR_BASE = 0;
+const int ADDR_GRIPPER = 1;
 
 // DC Motor 1: ELBOW
 const int ELBOW_PWM = 3;  // Speed pin
@@ -29,6 +30,12 @@ int baseTarget = 90;
 float baseCurrent = 90.0;
 int baseStepDelay = 0; // Delay in ms (0 = Fast, Higher = Slower)
 unsigned long lastBaseTime = 0;
+
+// Gripper Servo (Ramped Speed Logic)
+int gripperTarget = 90;
+float gripperCurrent = 90.0;
+int gripperStepDelay = 0; 
+unsigned long lastGripperTime = 0;
 
 // Elbow DC (PID Logic)
 int elbowTarget = 90;
@@ -53,6 +60,7 @@ unsigned long lastPIDTime = 0;
 void setup() {
   Serial.begin(115200);
   
+  // Base servo setup
   int storedBase = EEPROM.read(ADDR_BASE);
   if (storedBase > 180) { // Invalid angle value
       storedBase = 90; // Default center if memory is empty
@@ -61,10 +69,15 @@ void setup() {
   baseCurrent = storedBase;
   baseTarget = storedBase;
   baseServo.write(storedBase);
-
-  // 1. Setup Servos
   baseServo.attach(BASE_PIN);
-  // gripperServo.attach(GRIPPER_PIN);
+
+  int storedGripper = EEPROM.read(ADDR_GRIPPER);
+  if (storedGripper > 180) storedGripper = 90; 
+
+  gripperCurrent = storedGripper; 
+  gripperTarget = storedGripper;
+  gripperServo.write(storedGripper);
+  gripperServo.attach(GRIPPER_PIN);
   
   // 2. Setup DC Motors
   pinMode(ELBOW_PWM, OUTPUT);
@@ -88,6 +101,7 @@ void loop() {
   }
 
   updateBase();
+  updateGripper();
   // updateElbow();
   // updateWrist();
 }
@@ -158,9 +172,12 @@ void parseData() {
       wristMaxPWM = map(speedVal, 0, 100, 0, 255);
       break;
 
-    case 4: // Gripper (Direct Servo)
-      // Speed is ignored for gripper
-      gripperServo.write(angle);
+    case 4: // Gripper (Servo Ramping)
+      gripperTarget = angle;
+      // Use the same speed logic as the Base
+      if(speedVal >= 100) gripperStepDelay = 0;
+      else gripperStepDelay = map(speedVal, 1, 99, 30, 2);
+      EEPROM.update(ADDR_GRIPPER, angle); 
       break;
   }
 }
@@ -181,6 +198,23 @@ void updateBase() {
     if (baseCurrent < baseTarget) baseCurrent += 1.0;
     else if (baseCurrent > baseTarget) baseCurrent -= 1.0;
     baseServo.write((int)baseCurrent);
+  }
+}
+
+void updateGripper() {
+  if (gripperStepDelay == 0) {
+    if ((int)gripperCurrent != gripperTarget) {
+      gripperCurrent = gripperTarget;
+      gripperServo.write((int)gripperCurrent);
+    }
+    return;
+  }
+
+  if (millis() - lastGripperTime >= gripperStepDelay) {
+    lastGripperTime = millis();
+    if (gripperCurrent < gripperTarget) gripperCurrent += 1.0;
+    else if (gripperCurrent > gripperTarget) gripperCurrent -= 1.0;
+    gripperServo.write((int)gripperCurrent);
   }
 }
 

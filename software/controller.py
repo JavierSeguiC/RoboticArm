@@ -75,8 +75,8 @@ class RobotControllerApp:
         # Gripper Control (Buttons instead of slider)
         frame = ttk.Frame(self.root)
         frame.pack(pady=10)
-        ttk.Button(frame, text="Open Gripper", command=lambda: self.send_command(4, 90)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(frame, text="Close Gripper", command=lambda: self.send_command(4, 180)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame, text="Open Gripper", command=lambda: self.send_command(4, 130)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame, text="Close Gripper", command=lambda: self.send_command(4, 95)).pack(side=tk.LEFT, padx=5)
 
     def add_slider(self, label_text, motor_id, min_val, max_val):
         frame = ttk.Frame(self.root)
