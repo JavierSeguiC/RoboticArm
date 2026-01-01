@@ -1,4 +1,5 @@
 #include <Servo.h>
+#include <EEPROM.h>
 
 // --- Configuration ---
 Servo baseServo;
@@ -7,6 +8,9 @@ Servo gripperServo;
 // Pins
 const int BASE_PIN = 9;
 const int GRIPPER_PIN = 6;
+
+// EEPROM Addresses
+const int ADDR_BASE = 0;
 
 // DC Motor 1: ELBOW
 const int ELBOW_PWM = 3;  // Speed pin
@@ -49,6 +53,15 @@ unsigned long lastPIDTime = 0;
 void setup() {
   Serial.begin(115200);
   
+  int storedBase = EEPROM.read(ADDR_BASE);
+  if (storedBase > 180) { // Invalid angle value
+      storedBase = 90; // Default center if memory is empty
+    }
+
+  baseCurrent = storedBase;
+  baseTarget = storedBase;
+  baseServo.write(storedBase);
+
   // 1. Setup Servos
   baseServo.attach(BASE_PIN);
   // gripperServo.attach(GRIPPER_PIN);
@@ -63,10 +76,6 @@ void setup() {
   pinMode(WRIST_IN1, OUTPUT);
   pinMode(WRIST_IN2, OUTPUT);
   pinMode(WRIST_POT, INPUT);
-
-  // Initialize servos
-  // baseServo.write(90);
-  // gripperServo.write(90);
 
   Serial.println("System Ready. Send: <ID, Angle, Speed(0-100)>");
 }
@@ -135,6 +144,7 @@ void parseData() {
       // Map 0-100 speed to Delay (100 = 0ms delay, 1 = 30ms delay)
       if(speedVal >= 100) baseStepDelay = 0;
       else baseStepDelay = map(speedVal, 1, 99, 30, 2);
+      EEPROM.update(ADDR_BASE, angle); // Save position to EEPROM
       break;
 
     case 2: // Elbow (DC PID)
