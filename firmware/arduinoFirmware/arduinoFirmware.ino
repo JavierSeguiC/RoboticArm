@@ -55,6 +55,16 @@ int wristMaxPWM = 255;
 double wristKp = 4.0, wristKd = 0.5;
 int lastWristError = 0;
 
+// --- SENSOR CALIBRATION ---
+// For now, we assume full range 0-1023 corresponds to 0-180 degrees.
+const int ELBOW_POT_MIN = 0;   // Analog value at 0 degrees
+const int ELBOW_POT_MAX = 1023; // Analog value at 180 degrees
+
+// --- SENSOR STATE ---
+int elbowAngleCurrent = 0; // The calculated angle
+int lastElbowRaw = -1;     // To track changes and prevent print flooding
+const int SENSOR_THRESHOLD = 3; // Sensitivity: Ignore noise changes smaller than +/- 3
+
 // Serial Buffer
 const byte numChars = 32;
 char receivedChars[numChars];
@@ -105,6 +115,8 @@ void loop() {
     parseData();
     newData = false;
   }
+
+  readSensors();
 
   updateBase();
   updateGripper();
@@ -259,4 +271,27 @@ void updateWrist() {
   lastPIDTime = millis(); // Reset timer once per cycle
   
   setMotor(WRIST_PWM, WRIST_IN1, WRIST_IN2, wristMaxPWM, WRIST_POT, lastWristError, wristTarget, wristKp, wristKd, wristMaxPWM);
+}
+
+void readSensors() {
+  // 1. Read Raw Value
+  int rawValue = analogRead(ELBOW_POT);
+
+  // 2. Filter Noise & Check for Change
+  // We only update if the change is significant ( > threshold) to stop jitter
+  if (abs(rawValue - lastElbowRaw) > SENSOR_THRESHOLD) {
+    
+    // 3. Map Raw Analog (0-1023) to Degrees (0-180)
+    // If your pot is reversed, swap the last two numbers: map(..., 180, 0)
+    elbowAngleCurrent = map(rawValue, ELBOW_POT_MIN, ELBOW_POT_MAX, 0, 180);
+    
+    // 4. Debug Print
+    Serial.print("DEBUG >> Elbow Raw: ");
+    Serial.print(rawValue);
+    Serial.print(" | Angle: ");
+    Serial.println(elbowAngleCurrent);
+
+    // Update last known value
+    lastElbowRaw = rawValue;
+  }
 }
