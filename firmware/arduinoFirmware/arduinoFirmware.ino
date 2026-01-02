@@ -13,6 +13,12 @@ const int GRIPPER_PIN = 6;
 const int ADDR_BASE = 0;
 const int ADDR_GRIPPER = 1;
 
+// Safety Limits
+int baseMin = 0, baseMax = 180;
+int elbowMin = 0, elbowMax = 180;
+int wristMin = 0, wristMax = 180;
+int gripperMin = 0, gripperMax = 180;
+
 // DC Motor 1: ELBOW
 const int ELBOW_PWM = 3;  // Speed pin
 const int ELBOW_IN1 = 4;  // Direction 1
@@ -139,46 +145,40 @@ void recvWithStartEndMarkers() {
 // --- Logic: Decide what to do ---
 void parseData() {
   char * strtokIndx; 
-  
-  // ID
-  strtokIndx = strtok(receivedChars, ",");      
-  int id = atoi(strtokIndx); 
-  
-  // Angle
-  strtokIndx = strtok(NULL, ","); 
-  int angle = atoi(strtokIndx);
-
-  // Speed (0-100)
-  strtokIndx = strtok(NULL, ",");
-  int speedVal = atoi(strtokIndx); 
+  strtokIndx = strtok(receivedChars, ","); int id = atoi(strtokIndx); 
+  strtokIndx = strtok(NULL, ","); int val1 = atoi(strtokIndx); // Angle OR Min
+  strtokIndx = strtok(NULL, ","); int val2 = atoi(strtokIndx); // Speed OR Max
 
   switch(id) {
-    case 1: // Base (Servo Ramping)
-      baseTarget = angle;
-      // Map 0-100 speed to Delay (100 = 0ms delay, 1 = 30ms delay)
-      if(speedVal >= 100) baseStepDelay = 0;
-      else baseStepDelay = map(speedVal, 1, 99, 30, 2);
-      EEPROM.update(ADDR_BASE, angle); // Save position to EEPROM
+    // --- MOVE COMMANDS ---
+    case 1: // Base Move
+      baseTarget = constrain(val1, baseMin, baseMax); // Safety Clamp
+      if(val2 >= 100) baseStepDelay = 0; else baseStepDelay = map(val2, 1, 99, 30, 2);
+      EEPROM.update(ADDR_BASE, baseTarget); 
       break;
 
-    case 2: // Elbow (DC PID)
-      elbowTarget = angle;
-      // Map speed 0-100 to PWM limit 0-255
-      elbowMaxPWM = map(speedVal, 0, 100, 0, 255);
+    case 2: // Elbow Move
+      elbowTarget = constrain(val1, elbowMin, elbowMax); // Safety Clamp
+      elbowMaxPWM = map(val2, 0, 100, 0, 255);
       break;
 
-    case 3: // Wrist (DC PID)
-      wristTarget = angle;
-      wristMaxPWM = map(speedVal, 0, 100, 0, 255);
+    case 3: // Wrist Move
+      wristTarget = constrain(val1, wristMin, wristMax); // Safety Clamp
+      wristMaxPWM = map(val2, 0, 100, 0, 255);
       break;
 
-    case 4: // Gripper (Servo Ramping)
-      gripperTarget = angle;
-      // Use the same speed logic as the Base
-      if(speedVal >= 100) gripperStepDelay = 0;
-      else gripperStepDelay = map(speedVal, 1, 99, 30, 2);
-      EEPROM.update(ADDR_GRIPPER, angle); 
+    case 4: // Gripper Move
+      gripperTarget = constrain(val1, gripperMin, gripperMax); // Safety Clamp
+      if(val2 >= 100) gripperStepDelay = 0; else gripperStepDelay = map(val2, 1, 99, 30, 2);
+      EEPROM.update(ADDR_GRIPPER, gripperTarget); 
       break;
+
+    // --- CONFIGURATION COMMANDS (Set Limits) ---
+    // Format: <11, Min, Max>
+    case 11: baseMin = val1; baseMax = val2; Serial.println("Base Limits Updated"); break;
+    case 12: elbowMin = val1; elbowMax = val2; Serial.println("Elbow Limits Updated"); break;
+    case 13: wristMin = val1; wristMax = val2; Serial.println("Wrist Limits Updated"); break;
+    case 14: gripperMin = val1; gripperMax = val2; Serial.println("Gripper Limits Updated"); break;
   }
 }
 

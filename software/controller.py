@@ -11,7 +11,7 @@ class RobotControllerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Robot Manipulator Control")
-        self.root.geometry("400x550")
+        self.root.geometry("450x650")
         
         self.speed_val = 50 #default speed
 
@@ -46,6 +46,13 @@ class RobotControllerApp:
         else:
             print(f"Serial not connected. Command would be: <{motor_id},{angle},{self.speed_val}>")
 
+    def send_limit_config(self, config_id, min_val, max_val):
+        """Configuration Command: <ConfigID, Min, Max>"""
+        if self.ser and self.ser.is_open:
+            command = f"<{config_id},{min_val},{max_val}>"
+            self.ser.write(command.encode())
+            print(f"Config: {command}")
+
     def update_speed(self, val):
         self.speed_val = int(float(val))
         print(f"Speed set to: {self.speed_val}%")
@@ -77,6 +84,21 @@ class RobotControllerApp:
         frame.pack(pady=10)
         ttk.Button(frame, text="Open Gripper", command=lambda: self.send_command(4, 130)).pack(side=tk.LEFT, padx=5)
         ttk.Button(frame, text="Close Gripper", command=lambda: self.send_command(4, 95)).pack(side=tk.LEFT, padx=5)
+        
+        # --- 3. SAFETY LIMITS ---
+        self.show_limits = tk.BooleanVar(value=False)
+        toggle_btn = ttk.Checkbutton(self.root, text="Show Safety Limits Configuration", 
+                                     variable=self.show_limits, command=self.toggle_limits_menu)
+        toggle_btn.pack(pady=10)
+
+        self.limits_frame = ttk.LabelFrame(self.root, text="Joint Angle Constraints (Degrees)")
+        
+        # Create Limit Entries (Stored in a dict for easy access)
+        self.limit_entries = {} 
+        self.add_limit_row("Base (ID 1)", 11)
+        self.add_limit_row("Elbow (ID 2)", 12)
+        self.add_limit_row("Wrist (ID 3)", 13)
+        self.add_limit_row("Gripper (ID 4)", 14)
 
     def add_slider(self, label_text, motor_id, min_val, max_val):
         frame = ttk.Frame(self.root)
@@ -90,8 +112,50 @@ class RobotControllerApp:
         
         # Event binding: send command only when slider is released (to avoid flooding Arduino)
         scale.bind("<ButtonRelease-1>", lambda event: self.send_command(motor_id, int(scale.get())))
-       
+    
+    def add_limit_row(self, label, config_id):
+        row = ttk.Frame(self.limits_frame)
+        row.pack(fill='x', padx=5, pady=2)
+        
+        ttk.Label(row, text=label, width=15).pack(side=tk.LEFT)
+        
+        # Min Entry
+        ttk.Label(row, text="Min:").pack(side=tk.LEFT)
+        min_ent = ttk.Entry(row, width=5)
+        min_ent.insert(0, "0")
+        min_ent.pack(side=tk.LEFT, padx=5)
+        
+        # Max Entry
+        ttk.Label(row, text="Max:").pack(side=tk.LEFT)
+        max_ent = ttk.Entry(row, width=5)
+        max_ent.insert(0, "180")
+        max_ent.pack(side=tk.LEFT, padx=5)
+        
+        # Apply Button
+        btn = ttk.Button(row, text="Apply", 
+                   command=lambda: self.apply_limit(config_id, min_ent.get(), max_ent.get()))
+        btn.pack(side=tk.LEFT, padx=10)
 
+    def toggle_limits_menu(self):
+        if self.show_limits.get():
+            self.limits_frame.pack(pady=5, padx=20, fill='x')
+        else:
+            self.limits_frame.pack_forget()
+
+    def apply_limit(self, config_id, min_str, max_str):
+        try:
+            min_val = int(min_str)
+            max_val = int(max_str)
+            
+            if min_val < 0 or max_val > 180 or min_val >= max_val:
+                print("Error", "Invalid values! ensure 0 <= Min < Max <= 180")
+                return
+            
+            self.send_limit_config(config_id, min_val, max_val)
+            print("Success", f"Limits updated for ID {config_id-10}")
+            
+        except ValueError:
+            print("Error", "Please enter valid integers.")
 
 # --- MAIN ---
 if __name__ == "__main__":
