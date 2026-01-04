@@ -147,6 +147,13 @@ class RobotControllerApp:
         ttk.Button(frame, text="Open Gripper", command=lambda: self.send_command(4, 90)).pack(side=tk.LEFT, padx=5)
         ttk.Button(frame, text="Close Gripper", command=lambda: self.send_command(4, 180)).pack(side=tk.LEFT, padx=5)
 
+        # HOME BUTTONS  
+        # Save Current Position as Home
+        ttk.Button(root, text="Set Home", command=lambda: app.ser.write(b"<99,0,0>")).pack()
+
+        # Move Robot to Home
+        ttk.Button(root, text="Go Home", command=lambda: app.ser.write(b"<98,0,0>")).pack()
+
         # --- 3. LIMITS SECTION (Expandable) ---
         self.show_limits = tk.BooleanVar(value=False)
         toggle_btn = ttk.Checkbutton(self.root, text="Show Safety Limits Configuration", 

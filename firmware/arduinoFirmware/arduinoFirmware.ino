@@ -9,9 +9,40 @@ Servo gripperServo;
 const int BASE_PIN = 9;
 const int GRIPPER_PIN = 6;
 
-// --- EEPROM Addresses ---
-const int ADDR_BASE = 0;
-const int ADDR_GRIPPER = 1;
+// --- Variables for DC speed control ---
+// Current "Ramped" Setpoints (Float for smooth movement)
+float elbowCurrentSetpoint = 90.0;
+float wristCurrentSetpoint = 90.0;
+
+// Speed Steps (Degrees per loop update)
+float elbowStepSize = 5.0; 
+float wristStepSize = 5.0;
+
+// Minimum PWM to overcome friction (50-70)
+const int MIN_PWM = 60;
+
+// --- EEPROM MEMORY MAP ---
+// 0-9: Last Known Positions
+const int ADDR_POS_BASE    = 0;
+const int ADDR_POS_ELBOW   = 1;
+const int ADDR_POS_WRIST   = 2;
+const int ADDR_POS_GRIPPER = 3;
+
+// 10-19: Safety Limits (Min/Max)
+const int ADDR_LIM_BASE_MIN = 10;
+const int ADDR_LIM_BASE_MAX = 11;
+const int ADDR_LIM_ELBOW_MIN = 12;
+const int ADDR_LIM_ELBOW_MAX = 13;
+const int ADDR_LIM_WRIST_MIN = 14;
+const int ADDR_LIM_WRIST_MAX = 15;
+const int ADDR_LIM_GRIP_MIN  = 16;
+const int ADDR_LIM_GRIP_MAX  = 17;
+
+// 20-29: Saved Configurations (e.g., HOME)
+const int ADDR_HOME_BASE    = 20;
+const int ADDR_HOME_ELBOW   = 21;
+const int ADDR_HOME_WRIST   = 22;
+const int ADDR_HOME_GRIPPER = 23;
 
 // --- Safety Limits ---
 int baseMin = 0, baseMax = 180;
@@ -44,8 +75,8 @@ int gripperStepDelay = 0;
 unsigned long lastGripperTime = 0;
 
 // --- PID Constants  ---
-double wristKp = 6.0, wristKd = 2.0; 
-double elbowKp = 6.0, elbowKd = 2.0;
+double wristKp = 12.0, wristKd = 6.0; 
+double elbowKp = 12.0, elbowKd = 6.0;
 
 // --- Elbow DC (PID Logic) ---
 int elbowTarget = 90;
@@ -83,44 +114,38 @@ boolean newData = false;
 
 void setup() {
   Serial.begin(115200);
+
+  TCCR2B = (TCCR2B & 0b11111000) | 0x01; // Set PWM frequency to 31.4kHz for pins 3, 9, 10, 11
+                                         // outside of human hearing range
   
-  // Base servo setup
-  int storedBase = EEPROM.read(ADDR_BASE);
-  if (storedBase > 180) { // Invalid angle value
-      storedBase = 90; // Default center if memory is empty
-    }
+  loadLimits();
 
-  baseCurrent = storedBase;
-  baseTarget = storedBase;
-  baseServo.write(storedBase);
+  baseTarget = readEEPROM(ADDR_POS_BASE, 90);
+  elbowTarget = readEEPROM(ADDR_POS_ELBOW, 90);
+  wristTarget = readEEPROM(ADDR_POS_WRIST, 90);
+  gripperTarget = readEEPROM(ADDR_POS_GRIPPER, 90);
+
+  baseCurrent = baseTarget; 
+  baseServo.write(baseCurrent);
   baseServo.attach(BASE_PIN);
-
-  // Gripper servo setup
-  int storedGripper = EEPROM.read(ADDR_GRIPPER);
-  if (storedGripper > 180) storedGripper = 90; 
-
-  gripperCurrent = storedGripper; 
-  gripperTarget = storedGripper;
-  gripperServo.write(storedGripper);
+  
+  gripperCurrent = gripperTarget;
+  gripperServo.write(gripperCurrent);
   gripperServo.attach(GRIPPER_PIN);
   
   // Wrist DC Motor setup
+  wristCurrentSetpoint = wristTarget;
   pinMode(WRIST_PWM, OUTPUT); 
   pinMode(WRIST_IN1, OUTPUT); 
   pinMode(WRIST_IN2, OUTPUT); 
   pinMode(WRIST_POT, INPUT);
 
-  int currentWristAngle = map(analogRead(WRIST_POT), 0, 1023, 0, 180);
-  wristTarget = currentWristAngle; // Hold current position
-
   // Elbow DC Motor setup
+  elbowCurrentSetpoint = elbowTarget; 
   pinMode(ELBOW_PWM, OUTPUT); 
   pinMode(ELBOW_IN1, OUTPUT); 
   pinMode(ELBOW_IN2, OUTPUT); 
   pinMode(ELBOW_POT, INPUT);
-
-  // int currentElbowAngle = map(analogRead(ELBOW_POT), 0, 1023, 0, 180);
-  // elbowTarget = currentElbowAngle;
 
   Serial.println("System Ready. Send: <ID, Angle, Speed(0-100)>");
 }
@@ -140,6 +165,56 @@ void loop() {
   updateWrist();
 
   reportTelemetry();
+}
+
+int readEEPROM(int addr, int def) {
+  int val = EEPROM.read(addr);
+  if (val == 255) return def; // 255 usually means empty EEPROM
+  return val;
+}
+
+void loadLimits() {
+  baseMin = readEEPROM(ADDR_LIM_BASE_MIN, 0);
+  baseMax = readEEPROM(ADDR_LIM_BASE_MAX, 180);
+  
+  elbowMin = readEEPROM(ADDR_LIM_ELBOW_MIN, 0);
+  elbowMax = readEEPROM(ADDR_LIM_ELBOW_MAX, 180);
+  
+  wristMin = readEEPROM(ADDR_LIM_WRIST_MIN, 0);
+  wristMax = readEEPROM(ADDR_LIM_WRIST_MAX, 180);
+  
+  gripperMin = readEEPROM(ADDR_LIM_GRIP_MIN, 0);
+  gripperMax = readEEPROM(ADDR_LIM_GRIP_MAX, 180);
+}
+
+void saveLimits() {
+  EEPROM.update(ADDR_LIM_BASE_MIN, baseMin); EEPROM.update(ADDR_LIM_BASE_MAX, baseMax);
+  EEPROM.update(ADDR_LIM_ELBOW_MIN, elbowMin); EEPROM.update(ADDR_LIM_ELBOW_MAX, elbowMax);
+  EEPROM.update(ADDR_LIM_WRIST_MIN, wristMin); EEPROM.update(ADDR_LIM_WRIST_MAX, wristMax);
+  EEPROM.update(ADDR_LIM_GRIP_MIN, gripperMin); EEPROM.update(ADDR_LIM_GRIP_MAX, gripperMax);
+}
+
+void saveHomePosition() {
+  EEPROM.update(ADDR_HOME_BASE, baseTarget);
+  EEPROM.update(ADDR_HOME_ELBOW, elbowTarget);
+  EEPROM.update(ADDR_HOME_WRIST, wristTarget);
+  EEPROM.update(ADDR_HOME_GRIPPER, gripperTarget);
+  Serial.println("Home Position Saved.");
+}
+
+void loadHomePosition() {
+  baseTarget = readEEPROM(ADDR_HOME_BASE, 90);
+  elbowTarget = readEEPROM(ADDR_HOME_ELBOW, 90);
+  wristTarget = readEEPROM(ADDR_HOME_WRIST, 90);
+  gripperTarget = readEEPROM(ADDR_HOME_GRIPPER, 90);
+  
+  // Also update Last Pos immediately so if we reset, we stay here
+  EEPROM.update(ADDR_POS_BASE, baseTarget);
+  EEPROM.update(ADDR_POS_ELBOW, elbowTarget);
+  EEPROM.update(ADDR_POS_WRIST, wristTarget);
+  EEPROM.update(ADDR_POS_GRIPPER, gripperTarget);
+  
+  Serial.println("Moving to Home...");
 }
 
 // --- Protocol: Read data like "<1, 180>" ---
@@ -184,31 +259,36 @@ void parseData() {
     case 1: // Base Move
       baseTarget = constrain(val1, baseMin, baseMax); // Safety Clamp
       if(val2 >= 100) baseStepDelay = 0; else baseStepDelay = map(val2, 1, 99, 30, 2);
-      EEPROM.update(ADDR_BASE, baseTarget); 
+      EEPROM.update(ADDR_POS_BASE, baseTarget); 
       break;
 
     case 2: // Elbow Move
       elbowTarget = constrain(val1, elbowMin, elbowMax); // Safety Clamp
-      elbowMaxPWM = map(val2, 0, 100, 0, 255);
+      if (val2 >= 100) elbowStepSize = 100.0; // Instant
+      else elbowStepSize = map(val2, 1, 99, 10, 100) / 10.0; 
       break;
 
     case 3: // Wrist Move
       wristTarget = constrain(val1, wristMin, wristMax); // Safety Clamp
-      wristMaxPWM = map(val2, 0, 100, 0, 255);
+      if (val2 >= 100) wristStepSize = 100.0;
+      else wristStepSize = map(val2, 1, 99, 10, 100) / 10.0;
       break;
 
     case 4: // Gripper Move
       gripperTarget = constrain(val1, gripperMin, gripperMax); // Safety Clamp
       if(val2 >= 100) gripperStepDelay = 0; else gripperStepDelay = map(val2, 1, 99, 30, 2);
-      EEPROM.update(ADDR_GRIPPER, gripperTarget); 
+      EEPROM.update(ADDR_POS_GRIPPER, gripperTarget); 
       break;
 
     // --- CONFIGURATION COMMANDS (Set Limits) ---
-    // Format: <11, Min, Max>
     case 11: baseMin = val1; baseMax = val2; Serial.println("Base Limits Updated"); break;
     case 12: elbowMin = val1; elbowMax = val2; Serial.println("Elbow Limits Updated"); break;
     case 13: wristMin = val1; wristMax = val2; Serial.println("Wrist Limits Updated"); break;
     case 14: gripperMin = val1; gripperMax = val2; Serial.println("Gripper Limits Updated"); break;
+    
+    // --- HOME COMMANDS ---
+    case 98: loadHomePosition(); break; // Go Home
+    case 99: saveHomePosition(); break; // Set Home
   }
 }
 
@@ -254,52 +334,66 @@ void setMotor(int pwmPin, int in1, int in2, int potPin, int& lastError, int targ
   // 1. Read Sensor
   int currentAngle = map(analogRead(potPin), 0, 1023, 180, 0);
 
-  /* // --- DEBUG PRINT (Uncomment to see values) ---
-  Serial.print("DEBUG >> Curr: "); Serial.print(pwmPin); Serial.print(currentAngle);
-  Serial.print(" | Targ: "); Serial.println(target); */
-
   // 2. Calculate PID
   int error = target - currentAngle;
   int motorSpeed = (error * kp) + ((error - lastError) * kd);
   lastError = error;
 
- /*  // --- DEBUG PRINT (Uncomment to see values) ---
-  Serial.print("DEBUG >> Error: "); Serial.print(pwmPin); Serial.print(error);
-  Serial.print(" | Speed (Pre-Limit): "); Serial.println(motorSpeed); */
-
   // 3. Deadzone & Max Speed
-  if (abs(error) <= 2) {
+  if (abs(error) <= 1) { 
     motorSpeed = 0;
+    analogWrite(pwmPin, 0);
+    digitalWrite(in1, LOW); digitalWrite(in2, LOW);
+    return; // Exit early
   }
   
-  int absSpeed = abs(motorSpeed);
-  absSpeed = constrain(absSpeed, 0, maxPWM);
+  if (motorSpeed > 0 && motorSpeed < MIN_PWM) motorSpeed = MIN_PWM;
+  if (motorSpeed < 0 && motorSpeed > -MIN_PWM) motorSpeed = -MIN_PWM;
 
-  // 4. Drive Motor
+  int absSpeed = constrain(abs(motorSpeed), 0, maxPWM);
+
   if (motorSpeed > 0) {
     digitalWrite(in1, HIGH); digitalWrite(in2, LOW);
-  } else if (motorSpeed < 0) {
-    digitalWrite(in1, LOW); digitalWrite(in2, HIGH);
   } else {
-    digitalWrite(in1, LOW); digitalWrite(in2, LOW);
+    digitalWrite(in1, LOW); digitalWrite(in2, HIGH);
   }
   
   analogWrite(pwmPin, absSpeed);
 }
 
 void updateWrist() {
-  if (millis() - lastWristTime < 10) return; 
+  if (millis() - lastWristTime < 20) return; 
   lastWristTime = millis(); 
   
-  setMotor(WRIST_PWM, WRIST_IN1, WRIST_IN2, WRIST_POT, lastWristError, wristTarget, wristKp, wristKd, wristMaxPWM);
+  // --- 1. RAMPING LOGIC ---
+  if (abs(wristCurrentSetpoint - wristTarget) > wristStepSize) {
+    if (wristCurrentSetpoint < wristTarget) wristCurrentSetpoint += wristStepSize;
+    else wristCurrentSetpoint -= wristStepSize;
+  } else {
+    wristCurrentSetpoint = wristTarget; // Snap to finish
+  }
+
+  // --- 2. CALL PID with RAMPED Setpoint and FULL POWER (255) ---
+  // Note: We cast setpoint to (int) for the PID calculation
+  setMotor(WRIST_PWM, WRIST_IN1, WRIST_IN2, WRIST_POT, lastWristError, (int)wristCurrentSetpoint, wristKp, wristKd, 255);
 }
 
 void updateElbow() {
   // Use specific elbow timer
-  if (millis() - lastElbowTime < 10) return; 
+  if (millis() - lastElbowTime < 20) return; 
   lastElbowTime = millis();
 
-  setMotor(ELBOW_PWM, ELBOW_IN1, ELBOW_IN2, ELBOW_POT, lastElbowError, elbowTarget, elbowKp, elbowKd, elbowMaxPWM);
+  // --- 1. RAMPING LOGIC ---
+  if (abs(elbowCurrentSetpoint - elbowTarget) > elbowStepSize) {
+    if (elbowCurrentSetpoint < elbowTarget) elbowCurrentSetpoint += elbowStepSize;
+    else elbowCurrentSetpoint -= elbowStepSize;
+  } else {
+    elbowCurrentSetpoint = elbowTarget; // Snap to finish
+  }
+
+  // --- 2. CALL PID with RAMPED Setpoint and FULL POWER (255) ---
+  // Note: We cast setpoint to (int) for the PID calculation
+  setMotor(ELBOW_PWM, ELBOW_IN1, ELBOW_IN2, ELBOW_POT, lastElbowError, (int)elbowCurrentSetpoint, elbowKp, elbowKd, 255);
 }
 
 void readSensors() {
