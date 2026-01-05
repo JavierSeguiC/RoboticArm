@@ -19,8 +19,8 @@ float elbowCurrentSetpoint = 90.0;
 float wristCurrentSetpoint = 90.0;
 
 // Speed Steps (Degrees per loop update)
-float elbowStepSize = 5.0; 
-float wristStepSize = 5.0;
+float elbowStepSize = 1.0; 
+float wristStepSize = 1.0;
 
 // Minimum PWM to overcome friction (50-70)
 const int MIN_PWM = 60;
@@ -79,19 +79,21 @@ int gripperStepDelay = 0;
 unsigned long lastGripperTime = 0;
 
 // --- PID Constants  ---
-double wristKp = 12.0, wristKd = 6.0; 
-double elbowKp = 12.0, elbowKd = 6.0;
+double wristKp = 8.0, wristKi = 0.3, wristKd = 10.0; 
+double elbowKp = 8.0, elbowKi = 0.3, elbowKd = 10.0;
 
 // --- Elbow DC (PID Logic) ---
 int elbowTarget = 90;
 int elbowMaxPWM = 255; // Speed limit
 int lastElbowError = 0;
+long elbowIntegral = 0; 
 unsigned long lastElbowTime = 0; // For timing PID updates
 
 // --- Wrist DC (PID Logic) ---
 int wristTarget = 90;
 int wristMaxPWM = 255;
 int lastWristError = 0;
+long wristIntegral = 0;
 unsigned long lastWristTime = 0; // For timing PID updates
 
 // --- Sensor Callibration ---
@@ -256,43 +258,53 @@ void parseData() {
   char * strtokIndx; 
   strtokIndx = strtok(receivedChars, ","); int id = atoi(strtokIndx); 
   strtokIndx = strtok(NULL, ","); int val1 = atoi(strtokIndx); // Angle OR Min
-  strtokIndx = strtok(NULL, ","); int val2 = atoi(strtokIndx); // Speed OR Max
+  strtokIndx = strtok(NULL, ","); int val2 = atoi(strtokIndx); // Speed (0-100) OR Max
+
+  // --- MAP GLOBAL SPEED ---
+  // We calculate these once so they apply to all motors evenly
+  
+  // 1. DC Motor Step Size (0.0 to 10.0)
+  // If val2 is 0, we set a tiny minimum to prevent divide-by-zero or stuck state
+  float newStepSize = (float)val2 / 10.0; 
+  if (newStepSize < 0.1) newStepSize = 0.1; 
+  
+  // 2. Servo Delay (Reverse logic: Higher speed = Lower delay)
+  // Map 0-100 speed to 50ms-0ms delay
+  int newServoDelay = map(val2, 0, 100, 50, 0);
 
   switch(id) {
     // --- MOVE COMMANDS ---
     case 1: // Base Move
-      baseTarget = constrain(val1, baseMin, baseMax); // Safety Clamp
-      if(val2 >= 100) baseStepDelay = 0; else baseStepDelay = map(val2, 1, 99, 30, 2);
+      baseTarget = constrain(val1, baseMin, baseMax); 
+      baseStepDelay = newServoDelay; // Apply calculated delay
       EEPROM.update(ADDR_POS_BASE, baseTarget); 
       break;
 
     case 2: // Elbow Move
-      elbowTarget = constrain(val1, elbowMin, elbowMax); // Safety Clamp
-      if (val2 >= 100) elbowStepSize = 100.0; // Instant
-      else elbowStepSize = map(val2, 1, 99, 10, 100) / 10.0; 
+      elbowTarget = constrain(val1, elbowMin, elbowMax);
+      elbowStepSize = newStepSize; // Apply calculated step
       break;
 
     case 3: // Wrist Move
-      wristTarget = constrain(val1, wristMin, wristMax); // Safety Clamp
-      if (val2 >= 100) wristStepSize = 100.0;
-      else wristStepSize = map(val2, 1, 99, 10, 100) / 10.0;
+      wristTarget = constrain(val1, wristMin, wristMax); 
+      wristStepSize = newStepSize; // Apply calculated step
       break;
 
     case 4: // Gripper Move
-      gripperTarget = constrain(val1, gripperMin, gripperMax); // Safety Clamp
-      if(val2 >= 100) gripperStepDelay = 0; else gripperStepDelay = map(val2, 1, 99, 30, 2);
+      gripperTarget = constrain(val1, gripperMin, gripperMax); 
+      gripperStepDelay = newServoDelay; // Apply calculated delay
       EEPROM.update(ADDR_POS_GRIPPER, gripperTarget); 
       break;
 
-    // --- CONFIGURATION COMMANDS (Set Limits) ---
+    // --- CONFIGURATION COMMANDS (Limits) ---
     case 11: baseMin = val1; baseMax = val2; Serial.println("Base Limits Updated"); break;
     case 12: elbowMin = val1; elbowMax = val2; Serial.println("Elbow Limits Updated"); break;
     case 13: wristMin = val1; wristMax = val2; Serial.println("Wrist Limits Updated"); break;
     case 14: gripperMin = val1; gripperMax = val2; Serial.println("Gripper Limits Updated"); break;
     
     // --- HOME COMMANDS ---
-    case 98: loadHomePosition(); break; // Go Home
-    case 99: saveHomePosition(); break; // Set Home
+    case 98: loadHomePosition(); break; 
+    case 99: saveHomePosition(); break; 
   }
 }
 
@@ -333,28 +345,51 @@ void updateGripper() {
 }
 
 // --- GENERIC PID CONTROL FUNCTION ---
-int setMotor(int pwmPin, int in1, int in2, int potPin, int& lastError, int target, double kp, double kd, int maxPWM) {
+int setMotor(int pwmPin, int in1, int in2, int potPin, int& lastError, long& integral, int target, double kp, double ki, double kd, int maxPWM) {
   
   // 1. Read Sensor
   int currentAngle = map(analogRead(potPin), 0, 1023, 180, 0);
 
-  // 2. Calculate PID
+  // 2. Calculate Error
   int error = target - currentAngle;
-  int motorSpeed = (error * kp) + ((error - lastError) * kd);
+
+  // 3. INTEGRAL (The "Patience" Term)
+  // Only accumulate if we are close (within 20 degrees) to avoid crazy windup during big moves
+  if (abs(error) < 20) {
+      integral += error;
+  } else {
+      integral = 0; // Reset if we are far away (let Proportional handle the big move)
+  }
+  
+  // Anti-Windup: Cap the integral so it doesn't get too powerful
+  if (integral > 500) integral = 500;
+  if (integral < -500) integral = -500;
+
+  // 4. Calculate PID Output
+  // P = Instant reaction
+  // I = Overcome friction over time
+  // D = Dampening (Prevent overshoot)
+  int motorSpeed = (error * kp) + (integral * ki) + ((error - lastError) * kd);
+  
   lastError = error;
 
-  // 3. Deadzone & Max Speed
+  // 5. Deadzone 
+  // We reduce this to 1 degree. The Integral will help hold it here.
   if (abs(error) <= 1) { 
+    // Do NOT reset integral here, or it will sag!
     motorSpeed = 0;
     analogWrite(pwmPin, 0);
     digitalWrite(in1, LOW); digitalWrite(in2, LOW);
-    return; // Exit early
+    return 0; 
   }
   
-  if (motorSpeed > 0 && motorSpeed < MIN_PWM) motorSpeed = MIN_PWM;
-  if (motorSpeed < 0 && motorSpeed > -MIN_PWM) motorSpeed = -MIN_PWM;
-
-  int absSpeed = constrain(abs(motorSpeed), 0, maxPWM);
+  // 6. Minimum Power (Stiction handling)
+  // If the PID calculates a speed that is too low to move, boost it slightly
+  // But only if Ki hasn't already boosted it enough.
+  int absSpeed = abs(motorSpeed);
+  if (absSpeed > 0 && absSpeed < MIN_PWM) absSpeed = MIN_PWM;
+  
+  absSpeed = constrain(absSpeed, 0, maxPWM);
 
   if (motorSpeed > 0) {
     digitalWrite(in1, HIGH); digitalWrite(in2, LOW);
@@ -376,13 +411,13 @@ void updateWrist() {
     if (wristCurrentSetpoint < wristTarget) wristCurrentSetpoint += wristStepSize;
     else wristCurrentSetpoint -= wristStepSize;
   } else {
-    wristCurrentSetpoint = wristTarget; // Snap to finish
+    wristCurrentSetpoint = wristTarget; 
   }
 
-  // --- 2. CALL PID with RAMPED Setpoint and FULL POWER (255) ---
-  // Note: We cast setpoint to (int) for the PID calculation
-  currentWristPWM = setMotor(WRIST_PWM, WRIST_IN1, WRIST_IN2, WRIST_POT, lastWristError, (int)wristCurrentSetpoint, wristKp, wristKd, 255);
+  // Pass 'wristIntegral' and 'wristKi'
+  currentWristPWM = setMotor(WRIST_PWM, WRIST_IN1, WRIST_IN2, WRIST_POT, lastWristError, wristIntegral, (int)wristCurrentSetpoint, wristKp, wristKi, wristKd, 255);
 }
+
 
 void updateElbow() {
   // Use specific elbow timer
@@ -394,12 +429,11 @@ void updateElbow() {
     if (elbowCurrentSetpoint < elbowTarget) elbowCurrentSetpoint += elbowStepSize;
     else elbowCurrentSetpoint -= elbowStepSize;
   } else {
-    elbowCurrentSetpoint = elbowTarget; // Snap to finish
+    elbowCurrentSetpoint = elbowTarget; 
   }
 
-  // --- 2. CALL PID with RAMPED Setpoint and FULL POWER (255) ---
-  // Note: We cast setpoint to (int) for the PID calculation
-  currentElbowPWM = setMotor(ELBOW_PWM, ELBOW_IN1, ELBOW_IN2, ELBOW_POT, lastElbowError, (int)elbowCurrentSetpoint, elbowKp, elbowKd, 255);
+  // Pass 'elbowIntegral' and 'elbowKi'
+  currentElbowPWM = setMotor(ELBOW_PWM, ELBOW_IN1, ELBOW_IN2, ELBOW_POT, lastElbowError, elbowIntegral, (int)elbowCurrentSetpoint, elbowKp, elbowKi, elbowKd, 255);
 }
 
 void readSensors() {
