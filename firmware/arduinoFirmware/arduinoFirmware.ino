@@ -10,6 +10,10 @@ const int BASE_PIN = 9;
 const int GRIPPER_PIN = 6;
 
 // --- Variables for DC speed control ---
+
+int currentElbowPWM = 0;
+int currentWristPWM = 0;
+
 // Current "Ramped" Setpoints (Float for smooth movement)
 float elbowCurrentSetpoint = 90.0;
 float wristCurrentSetpoint = 90.0;
@@ -329,7 +333,7 @@ void updateGripper() {
 }
 
 // --- GENERIC PID CONTROL FUNCTION ---
-void setMotor(int pwmPin, int in1, int in2, int potPin, int& lastError, int target, double kp, double kd, int maxPWM) {
+int setMotor(int pwmPin, int in1, int in2, int potPin, int& lastError, int target, double kp, double kd, int maxPWM) {
   
   // 1. Read Sensor
   int currentAngle = map(analogRead(potPin), 0, 1023, 180, 0);
@@ -359,6 +363,8 @@ void setMotor(int pwmPin, int in1, int in2, int potPin, int& lastError, int targ
   }
   
   analogWrite(pwmPin, absSpeed);
+
+  return absSpeed;
 }
 
 void updateWrist() {
@@ -375,7 +381,7 @@ void updateWrist() {
 
   // --- 2. CALL PID with RAMPED Setpoint and FULL POWER (255) ---
   // Note: We cast setpoint to (int) for the PID calculation
-  setMotor(WRIST_PWM, WRIST_IN1, WRIST_IN2, WRIST_POT, lastWristError, (int)wristCurrentSetpoint, wristKp, wristKd, 255);
+  currentWristPWM = setMotor(WRIST_PWM, WRIST_IN1, WRIST_IN2, WRIST_POT, lastWristError, (int)wristCurrentSetpoint, wristKp, wristKd, 255);
 }
 
 void updateElbow() {
@@ -393,7 +399,7 @@ void updateElbow() {
 
   // --- 2. CALL PID with RAMPED Setpoint and FULL POWER (255) ---
   // Note: We cast setpoint to (int) for the PID calculation
-  setMotor(ELBOW_PWM, ELBOW_IN1, ELBOW_IN2, ELBOW_POT, lastElbowError, (int)elbowCurrentSetpoint, elbowKp, elbowKd, 255);
+  currentElbowPWM = setMotor(ELBOW_PWM, ELBOW_IN1, ELBOW_IN2, ELBOW_POT, lastElbowError, (int)elbowCurrentSetpoint, elbowKp, elbowKd, 255);
 }
 
 void readSensors() {
@@ -427,11 +433,14 @@ void reportTelemetry() {
   // Format: STATUS:ElbowAngle,ElbowRaw,WristAngle,WristRaw
   // We use a simplified format to make parsing easier in Python
   Serial.print("STATUS:");
-  Serial.print(elbowAngleCurrent);
+  Serial.print(elbowAngleCurrent); // Elbow measured angle (º)
   Serial.print(",");
-  Serial.print(lastElbowRaw);
+  Serial.print(lastElbowRaw);      // Elbow raw sensor value
   Serial.print(",");
-  Serial.print(wristAngleCurrent);
+  Serial.print(wristAngleCurrent); // Wrist measured angle (º)
   Serial.print(",");
-  Serial.println(lastWristRaw);
+  Serial.print(lastWristRaw);      // Wrist raw sensor value
+  Serial.print(",");    
+  Serial.print(map(currentElbowPWM, 0, 255, 0, 100)); Serial.print(","); // Elbow PWM as %
+  Serial.println(map(currentWristPWM, 0, 255, 0, 100));               // Wrist PWM as %
 }

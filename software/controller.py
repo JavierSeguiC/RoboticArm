@@ -51,16 +51,19 @@ class RobotControllerApp:
                 try:
                     if self.ser.in_waiting > 0:
                         line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                        
+                        print(f"Raw: {line}")
                         # --- PARSE TELEMETRY ---
                         if line.startswith("STATUS:"):
                             # Format: STATUS:ElbowAngle,ElbowRaw,WristAngle,WristRaw
                             parts = line.split(":")[1].split(",")
-                            if len(parts) == 4:
+                            if len(parts) == 6: 
                                 self.telemetry_data["elbow_ang"] = parts[0]
                                 self.telemetry_data["elbow_raw"] = parts[1]
                                 self.telemetry_data["wrist_ang"] = parts[2]
                                 self.telemetry_data["wrist_raw"] = parts[3]
+                                self.telemetry_data["elbow_pwm"] = parts[4]
+                                self.telemetry_data["wrist_pwm"] = parts[5]
+                                
                                 self.update_telemetry_ui()
                         elif line:
                             print(f"[ARDUINO]: {line}") 
@@ -108,27 +111,30 @@ class RobotControllerApp:
         ttk.Label(self.telemetry_frame, text="Joint", font=("Arial", 9, "bold")).grid(row=0, column=0, padx=5)
         ttk.Label(self.telemetry_frame, text="Target (°)", font=("Arial", 9, "bold")).grid(row=0, column=1, padx=5)
         ttk.Label(self.telemetry_frame, text="Actual (°)", font=("Arial", 9, "bold")).grid(row=0, column=2, padx=5)
-        ttk.Label(self.telemetry_frame, text="Raw (0-1023)", font=("Arial", 9, "bold")).grid(row=0, column=3, padx=5)
-
+        ttk.Label(self.telemetry_frame, text="Raw", font=("Arial", 9, "bold")).grid(row=0, column=3, padx=5)
+        ttk.Label(self.telemetry_frame, text="PWM (%)", font=("Arial", 9, "bold")).grid(row=0, column=4, padx=5)
+        
         # Grid Data Labels (We keep references to update them later)
         self.tel_labels = {}
         joints = ["Base", "Elbow", "Wrist", "Gripper"]
         for i, joint in enumerate(joints):
             row = i + 1
-            ttk.Label(self.telemetry_frame, text=joint).grid(row=row, column=0, pady=2)
-            
-            # Create labels for Target, Actual, Raw
+            ttk.Label(self.telemetry_frame, text=joint + ":").grid(row=row, column=0, sticky="e")
+
             l_target = ttk.Label(self.telemetry_frame, text="--")
             l_target.grid(row=row, column=1)
-            
+
             l_actual = ttk.Label(self.telemetry_frame, text="--")
             l_actual.grid(row=row, column=2)
-            
+
             l_raw = ttk.Label(self.telemetry_frame, text="--")
             l_raw.grid(row=row, column=3)
-            
-            self.tel_labels[joint] = {"t": l_target, "a": l_actual, "r": l_raw}
 
+            l_pwm = ttk.Label(self.telemetry_frame, text="--") 
+            l_pwm.grid(row=row, column=4)
+            
+            self.tel_labels[joint] = {"t": l_target, "a": l_actual, "r": l_raw, "p": l_pwm}
+        
         # --- 2. CONTROLS SECTION ---
         ttk.Label(self.root, text="Manual Control", font=("Arial", 16)).pack(pady=10)
 
@@ -200,6 +206,14 @@ class RobotControllerApp:
         self.tel_labels["Wrist"]["a"].config(text=self.telemetry_data["wrist_ang"])
         self.tel_labels["Wrist"]["r"].config(text=self.telemetry_data["wrist_raw"])
 
+        # Base/Gripper are Servos, they don't report PWM
+        self.tel_labels["Base"]["p"].config(text="N/A")
+        self.tel_labels["Gripper"]["p"].config(text="N/A")
+
+        # DC Motors
+        self.tel_labels["Elbow"]["p"].config(text=f"{self.telemetry_data.get('elbow_pwm', 0)}%")
+        self.tel_labels["Wrist"]["p"].config(text=f"{self.telemetry_data.get('wrist_pwm', 0)}%")
+
     def add_slider(self, label_text, motor_id, min_val, max_val):
         frame = ttk.Frame(self.root)
         frame.pack(pady=5, fill='x', padx=20)
@@ -249,7 +263,7 @@ class RobotControllerApp:
             
             if min_val < 0 or max_val > 180 or min_val >= max_val:
                 print("Error", "Invalid values! ensure 0 <= Min < Max <= 180")
-                retur
+                return
             
             self.send_limit_config(config_id, min_val, max_val)
             print("Success", f"Limits updated for ID {config_id-10}")
