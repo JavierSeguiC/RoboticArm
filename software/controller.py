@@ -3,6 +3,7 @@ from tkinter import ttk
 import serial
 import time
 import threading
+import pygame
 
 # --- CONFIGURATION ---
 SERIAL_PORT = 'COM8'
@@ -24,13 +25,31 @@ class RobotControllerApp:
         self.target_gripper = 90
 
         self.telemetry_data = {
-            "elbow_ang": 0, "elbow_raw": 0,
-            "wrist_ang": 0, "wrist_raw": 0
+            "base": 90, "elbow": 90, "wrist": 90, "gripper": 90
         }
+        self.startup_synced = False  # <--- ADD THIS FLAG
 
+        self.remote_active = False
+        self.joy_sensitivity = [2.0, 2.0, 2.0, 3.0] # Speed for Base, Elbow, Wrist, Gripper
+        self.sliders = {} # We need to store sliders to move them programmatically later
+        
+        # [NEW] Setup Joystick
+        pygame.init()
+        pygame.joystick.init()
+        if pygame.joystick.get_count() > 0:
+            self.joystick = pygame.joystick.Joystick(0)
+            self.joystick.init()
+            print(f"Controller Connected: {self.joystick.get_name()}")
+        else:
+            self.joystick = None
+            print("No Controller Found")
+
+        # [NEW] Start the Remote Polling Loop
+        self.root.after(50, self.process_remote_input)
+        
         self.create_widgets()
         self.connect_serial()
-        
+
     def connect_serial(self):
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
@@ -51,38 +70,56 @@ class RobotControllerApp:
                 try:
                     if self.ser.in_waiting > 0:
                         line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                        print(f"Raw: {line}")
-                        # --- PARSE TELEMETRY ---
+                        
                         if line.startswith("STATUS:"):
-                            # Format: STATUS:ElbowAngle,ElbowRaw,WristAngle,WristRaw
+                            # Format: Base, Elbow, Wrist, Gripper, RawElbow, RawWrist, PWM_Elbow, PWM_Wrist
                             parts = line.split(":")[1].split(",")
-                            if len(parts) == 6: 
-                                self.telemetry_data["elbow_ang"] = parts[0]
-                                self.telemetry_data["elbow_raw"] = parts[1]
-                                self.telemetry_data["wrist_ang"] = parts[2]
-                                self.telemetry_data["wrist_raw"] = parts[3]
-                                self.telemetry_data["elbow_pwm"] = parts[4]
-                                self.telemetry_data["wrist_pwm"] = parts[5]
+                            
+                            if len(parts) >= 8:
+                                # 1. Parse Data
+                                self.telemetry_data["base"] = int(parts[0])
                                 
+                                # [FIX] Invert DC Motors (180 - Angle) to match visual polarity
+                                self.telemetry_data["elbow"] = 180 - int(parts[1])
+                                self.telemetry_data["wrist"] = 180 - int(parts[2])
+                                
+                                self.telemetry_data["gripper"] = int(parts[3])
+                                
+                                # Store raw data for debugging
+                                self.telemetry_data["elbow_raw"] = parts[4]
+                                self.telemetry_data["wrist_raw"] = parts[5]
+                                self.telemetry_data["elbow_pwm"] = parts[6]
+                                self.telemetry_data["wrist_pwm"] = parts[7]
+
+                                # 2. Sync Sliders on Startup
+                                if not self.startup_synced:
+                                    self.sync_sliders_to_telemetry()
+                                    self.startup_synced = True
+                                    print("System Synced with Robot State")
+                                    
                                 self.update_telemetry_ui()
+                                
                         elif line:
                             print(f"[ARDUINO]: {line}") 
                 except Exception as e:
                     print(f"Serial Read Error: {e}")
             time.sleep(0.01)
 
-    def send_command(self, motor_id, angle):
+    def send_command(self, motor_id, angle, override_speed=None):
         # Update local target memory
         if motor_id == 1: self.target_base = angle
         elif motor_id == 2: self.target_elbow = angle
         elif motor_id == 3: self.target_wrist = angle
         elif motor_id == 4: self.target_gripper = angle
         
+        # Determine speed: Use override if provided, else use UI slider value
+        speed_to_send = override_speed if override_speed is not None else self.speed_val
+
         # Send to Arduino
         if self.ser and self.ser.is_open:
-            command = f"<{motor_id},{angle},{self.speed_val}>"
+            command = f"<{motor_id},{int(angle)},{speed_to_send}>"
             self.ser.write(command.encode())
-            print(f"Command: {command}")
+            # print(f"Command: {command}") # Optional: Comment out to reduce spam
 
             self.update_telemetry_ui()
 
@@ -138,6 +175,11 @@ class RobotControllerApp:
         # --- 2. CONTROLS SECTION ---
         ttk.Label(self.root, text="Manual Control", font=("Arial", 16)).pack(pady=10)
 
+        # [NEW] Remote Toggle
+        self.btn_remote = tk.Button(self.root, text="Enable Remote: OFF", bg="lightgray", 
+                                    command=self.toggle_remote)
+        self.btn_remote.pack(pady=5)
+
         speed_frame = ttk.LabelFrame(self.root, text="Global Velocity Limit (%)")
         speed_frame.pack(pady=5, padx=20, fill='x')
         speed_scale = ttk.Scale(speed_frame, from_=1, to=100, orient='horizontal', command=self.update_speed)
@@ -150,8 +192,8 @@ class RobotControllerApp:
 
         frame = ttk.Frame(self.root)
         frame.pack(pady=10)
-        ttk.Button(frame, text="Open Gripper", command=lambda: self.send_command(4, 90)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(frame, text="Close Gripper", command=lambda: self.send_command(4, 180)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame, text="Open Gripper", command=lambda: self.send_command(4, 180)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame, text="Close Gripper", command=lambda: self.send_command(4, 90)).pack(side=tk.LEFT, padx=5)
 
         # HOME BUTTONS  
         # Save Current Position as Home
@@ -173,6 +215,76 @@ class RobotControllerApp:
         self.add_limit_row("Wrist (ID 3)", 13)
         self.add_limit_row("Gripper (ID 4)", 14)
 
+    def toggle_remote(self):
+        self.remote_active = not self.remote_active
+        if self.remote_active:
+            self.btn_remote.config(text="Enable Remote: ON", bg="lightgreen")
+        
+            self.sync_sliders_to_telemetry()
+            
+        else:
+            self.btn_remote.config(text="Enable Remote: OFF", bg="lightgray")
+    def process_remote_input(self):
+        # Only run if active and joystick exists
+        if self.remote_active and self.joystick:
+            pygame.event.pump() 
+
+            # 1. Read Axes (Using your DS4 logic)
+            # Adjust axis numbers if needed based on your testing
+            def deadzone(val): return 0.0 if abs(val) < 0.1 else val
+
+            axis_base   = deadzone(self.joystick.get_axis(0))
+            axis_elbow  = deadzone(self.joystick.get_axis(1)) * -1
+            axis_wrist  = deadzone(self.joystick.get_axis(3)) * -1
+            
+            # Triggers logic
+            val_l2 = (self.joystick.get_axis(4) + 1) / 2
+            val_r2 = (self.joystick.get_axis(5) + 1) / 2
+            axis_gripper = val_r2 - val_l2 
+
+            inputs = [axis_base, axis_elbow, axis_wrist, axis_gripper]
+            current_targets = [self.target_base, self.target_elbow, self.target_wrist, self.target_gripper]
+            
+            any_movement = False
+
+            # 2. Update Shared State ("The Agreement")
+            for i in range(4):
+                if inputs[i] != 0:
+                    any_movement = True
+                    # Update target
+                    current_targets[i] += inputs[i] * self.joy_sensitivity[i]
+                    # Constrain
+                    current_targets[i] = max(0, min(180, current_targets[i]))
+                    
+                    # [CRITICAL] Update the Slider Visual
+                    # This ensures the UI agrees with the Remote
+                    if (i + 1) in self.sliders:
+                        self.sliders[i + 1].set(int(current_targets[i]))
+
+            # 3. Save State & Send Commands
+            if any_movement:
+                # We use override_speed=80 for snappy remote response
+                self.send_command(1, current_targets[0], 80)
+                self.send_command(2, current_targets[1], 80)
+                self.send_command(3, current_targets[2], 80)
+                self.send_command(4, current_targets[3], 80)
+
+        # 4. Schedule next check in 50ms
+        self.root.after(50, self.process_remote_input)
+
+    def sync_sliders_to_telemetry(self):
+        # Update Target Variables to match Reality
+        self.target_base = self.telemetry_data["base"]
+        self.target_elbow = self.telemetry_data["elbow"]
+        self.target_wrist = self.telemetry_data["wrist"]
+        self.target_gripper = self.telemetry_data["gripper"]
+
+        # Update Visual Sliders (Using .set does not trigger the callback usually)
+        if 1 in self.sliders: self.sliders[1].set(self.target_base)
+        if 2 in self.sliders: self.sliders[2].set(self.target_elbow)
+        if 3 in self.sliders: self.sliders[3].set(self.target_wrist)
+        if 4 in self.sliders: self.sliders[4].set(self.target_gripper)
+    
     def toggle_telemetry(self):
         if self.show_telemetry.get():
             self.telemetry_frame.pack(pady=5, padx=10, fill='x')
@@ -185,34 +297,33 @@ class RobotControllerApp:
         self.root.after(0, self._update_ui_safe)
 
     def _update_ui_safe(self):
-        # Update Targets (From our local commands)
+        # --- 1. Update Target Labels (From local variables) ---
         self.tel_labels["Base"]["t"].config(text=str(self.target_base))
         self.tel_labels["Elbow"]["t"].config(text=str(self.target_elbow))
         self.tel_labels["Wrist"]["t"].config(text=str(self.target_wrist))
         self.tel_labels["Gripper"]["t"].config(text=str(self.target_gripper))
 
-        # Update Actuals (From Arduino Telemetry)
-        # Note: Base and Gripper are servos (Open Loop), so Actual = Target, Raw = N/A
-        self.tel_labels["Base"]["a"].config(text=str(self.target_base))
+        # --- 2. Update Actual/Raw/PWM Labels (From Telemetry) ---
+        
+        # Base (Servo)
+        self.tel_labels["Base"]["a"].config(text=str(self.telemetry_data.get("base", "--")))
         self.tel_labels["Base"]["r"].config(text="N/A")
-        
-        self.tel_labels["Gripper"]["a"].config(text=str(self.target_gripper))
-        self.tel_labels["Gripper"]["r"].config(text="N/A")
-
-        # DC Motors (Closed Loop)
-        self.tel_labels["Elbow"]["a"].config(text=self.telemetry_data["elbow_ang"])
-        self.tel_labels["Elbow"]["r"].config(text=self.telemetry_data["elbow_raw"])
-        
-        self.tel_labels["Wrist"]["a"].config(text=self.telemetry_data["wrist_ang"])
-        self.tel_labels["Wrist"]["r"].config(text=self.telemetry_data["wrist_raw"])
-
-        # Base/Gripper are Servos, they don't report PWM
         self.tel_labels["Base"]["p"].config(text="N/A")
-        self.tel_labels["Gripper"]["p"].config(text="N/A")
+        
+        # Elbow (DC Motor)
+        self.tel_labels["Elbow"]["a"].config(text=str(self.telemetry_data.get("elbow", "--")))
+        self.tel_labels["Elbow"]["r"].config(text=str(self.telemetry_data.get("elbow_raw", "--")))
+        self.tel_labels["Elbow"]["p"].config(text=str(self.telemetry_data.get("elbow_pwm", "--")) + "%")
+        
+        # Wrist (DC Motor)
+        self.tel_labels["Wrist"]["a"].config(text=str(self.telemetry_data.get("wrist", "--")))
+        self.tel_labels["Wrist"]["r"].config(text=str(self.telemetry_data.get("wrist_raw", "--")))
+        self.tel_labels["Wrist"]["p"].config(text=str(self.telemetry_data.get("wrist_pwm", "--")) + "%")
 
-        # DC Motors
-        self.tel_labels["Elbow"]["p"].config(text=f"{self.telemetry_data.get('elbow_pwm', 0)}%")
-        self.tel_labels["Wrist"]["p"].config(text=f"{self.telemetry_data.get('wrist_pwm', 0)}%")
+        # Gripper (Servo)
+        self.tel_labels["Gripper"]["a"].config(text=str(self.telemetry_data.get("gripper", "--")))
+        self.tel_labels["Gripper"]["r"].config(text="N/A")
+        self.tel_labels["Gripper"]["p"].config(text="N/A")
 
     def add_slider(self, label_text, motor_id, min_val, max_val):
         frame = ttk.Frame(self.root)
@@ -220,12 +331,15 @@ class RobotControllerApp:
         
         ttk.Label(frame, text=label_text).pack(anchor='w')
         
-        # Slider calls send_command on change
+        # Create scale
         scale = ttk.Scale(frame, from_=min_val, to=max_val, orient='horizontal')
         scale.pack(fill='x')
         
-        # Event binding: send command only when slider is released (to avoid flooding Arduino)
-        scale.bind("<ButtonRelease-1>", lambda event: self.send_command(motor_id, int(scale.get())))
+        # [NEW] Save reference so the remote can update this slider
+        self.sliders[motor_id] = scale
+        
+        # Event binding: Only send when user releases mouse
+        scale.bind("<ButtonRelease-1>", lambda event: self.send_command(motor_id, int(scale.get()))) 
     
     def add_limit_row(self, label, config_id):
         row = ttk.Frame(self.limits_frame)

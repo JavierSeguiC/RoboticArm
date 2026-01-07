@@ -460,21 +460,32 @@ void readSensors() {
 }
 
 void reportTelemetry() {
-  // Report every 200ms (5Hz) to avoid flooding the serial line
   if (millis() - lastReportTime < 200) return;
   lastReportTime = millis();
 
-  // Format: STATUS:ElbowAngle,ElbowRaw,WristAngle,WristRaw
-  // We use a simplified format to make parsing easier in Python
   Serial.print("STATUS:");
-  Serial.print(elbowAngleCurrent); // Elbow measured angle (º)
+  
+  // 1. Send Base (Target/Current are same for servos)
+  Serial.print((int)baseCurrent); 
   Serial.print(",");
-  Serial.print(lastElbowRaw);      // Elbow raw sensor value
+  
+  // 2. Send Elbow (Measured)
+  Serial.print(elbowAngleCurrent); 
   Serial.print(",");
-  Serial.print(wristAngleCurrent); // Wrist measured angle (º)
+
+  // 3. Send Wrist (Measured)
+  Serial.print(wristAngleCurrent); 
   Serial.print(",");
-  Serial.print(lastWristRaw);      // Wrist raw sensor value
-  Serial.print(",");    
-  Serial.print(map(currentElbowPWM, 0, 255, 0, 100)); Serial.print(","); // Elbow PWM as %
-  Serial.println(map(currentWristPWM, 0, 255, 0, 100));               // Wrist PWM as %
+
+  // 4. Send Gripper
+  Serial.print((int)gripperCurrent); 
+  Serial.print(",");
+
+  // 5-6: Raw Sensor Values (0-1023)
+  Serial.print(lastElbowRaw); Serial.print(",");
+  Serial.print(lastWristRaw); Serial.print(",");
+
+  // 7-8: PWM Effort % (0-100)
+  Serial.print(map(currentElbowPWM, 0, 255, 0, 100)); Serial.print(",");
+  Serial.println(map(currentWristPWM, 0, 255, 0, 100));
 }
