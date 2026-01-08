@@ -46,7 +46,6 @@ const int ADDR_LIM_GRIP_MAX  = 17;
 const int ADDR_HOME_BASE    = 20;
 const int ADDR_HOME_ELBOW   = 21;
 const int ADDR_HOME_WRIST   = 22;
-const int ADDR_HOME_GRIPPER = 23;
 
 // --- Safety Limits ---
 int baseMin = 0, baseMax = 180;
@@ -204,7 +203,6 @@ void saveHomePosition() {
   EEPROM.update(ADDR_HOME_BASE, baseTarget);
   EEPROM.update(ADDR_HOME_ELBOW, elbowTarget);
   EEPROM.update(ADDR_HOME_WRIST, wristTarget);
-  EEPROM.update(ADDR_HOME_GRIPPER, gripperTarget);
   Serial.println("Home Position Saved.");
 }
 
@@ -212,13 +210,11 @@ void loadHomePosition() {
   baseTarget = readEEPROM(ADDR_HOME_BASE, 90);
   elbowTarget = readEEPROM(ADDR_HOME_ELBOW, 90);
   wristTarget = readEEPROM(ADDR_HOME_WRIST, 90);
-  gripperTarget = readEEPROM(ADDR_HOME_GRIPPER, 90);
   
   // Also update Last Pos immediately so if we reset, we stay here
   EEPROM.update(ADDR_POS_BASE, baseTarget);
   EEPROM.update(ADDR_POS_ELBOW, elbowTarget);
   EEPROM.update(ADDR_POS_WRIST, wristTarget);
-  EEPROM.update(ADDR_POS_GRIPPER, gripperTarget);
   
   Serial.println("Moving to Home...");
 }
@@ -253,55 +249,42 @@ void recvWithStartEndMarkers() {
   }
 }
 
+void reportLimits() {
+  Serial.print("CONFIG:");
+  Serial.print(baseMin); Serial.print(","); Serial.print(baseMax); Serial.print(",");
+  Serial.print(elbowMin); Serial.print(","); Serial.print(elbowMax); Serial.print(",");
+  Serial.print(wristMin); Serial.print(","); Serial.print(wristMax); Serial.print(",");
+  Serial.print(gripperMin); Serial.print(","); Serial.println(gripperMax);
+}
+
 // --- Logic: Decide what to do ---
 void parseData() {
   char * strtokIndx; 
   strtokIndx = strtok(receivedChars, ","); int id = atoi(strtokIndx); 
-  strtokIndx = strtok(NULL, ","); int val1 = atoi(strtokIndx); // Angle OR Min
-  strtokIndx = strtok(NULL, ","); int val2 = atoi(strtokIndx); // Speed (0-100) OR Max
+  strtokIndx = strtok(NULL, ","); int val1 = atoi(strtokIndx); 
+  strtokIndx = strtok(NULL, ","); int val2 = atoi(strtokIndx); 
 
-  // --- MAP GLOBAL SPEED ---
-  // We calculate these once so they apply to all motors evenly
-  
-  // 1. DC Motor Step Size (0.0 to 10.0)
-  // If val2 is 0, we set a tiny minimum to prevent divide-by-zero or stuck state
+  // ... (Keep your existing Speed Mapping logic here) ...
   float newStepSize = (float)val2 / 10.0; 
   if (newStepSize < 0.1) newStepSize = 0.1; 
-  
-  // 2. Servo Delay (Reverse logic: Higher speed = Lower delay)
-  // Map 0-100 speed to 50ms-0ms delay
   int newServoDelay = map(val2, 0, 100, 50, 0);
 
   switch(id) {
-    // --- MOVE COMMANDS ---
-    case 1: // Base Move
-      baseTarget = constrain(val1, baseMin, baseMax); 
-      baseStepDelay = newServoDelay; // Apply calculated delay
-      EEPROM.update(ADDR_POS_BASE, baseTarget); 
-      break;
+    // ... (Keep Move Commands 1-4 exactly as they were) ...
+    case 1: baseTarget = constrain(val1, baseMin, baseMax); baseStepDelay = newServoDelay; EEPROM.update(ADDR_POS_BASE, baseTarget); break;
+    case 2: elbowTarget = constrain(val1, elbowMin, elbowMax); elbowStepSize = newStepSize; break;
+    case 3: wristTarget = constrain(val1, wristMin, wristMax); wristStepSize = newStepSize; break;
+    case 4: gripperTarget = constrain(val1, gripperMin, gripperMax); gripperStepDelay = newServoDelay; EEPROM.update(ADDR_POS_GRIPPER, gripperTarget); break;
 
-    case 2: // Elbow Move
-      elbowTarget = constrain(val1, elbowMin, elbowMax);
-      elbowStepSize = newStepSize; // Apply calculated step
-      break;
-
-    case 3: // Wrist Move
-      wristTarget = constrain(val1, wristMin, wristMax); 
-      wristStepSize = newStepSize; // Apply calculated step
-      break;
-
-    case 4: // Gripper Move
-      gripperTarget = constrain(val1, gripperMin, gripperMax); 
-      gripperStepDelay = newServoDelay; // Apply calculated delay
-      EEPROM.update(ADDR_POS_GRIPPER, gripperTarget); 
-      break;
-
-    // --- CONFIGURATION COMMANDS (Limits) ---
-    case 11: baseMin = val1; baseMax = val2; Serial.println("Base Limits Updated"); break;
-    case 12: elbowMin = val1; elbowMax = val2; Serial.println("Elbow Limits Updated"); break;
-    case 13: wristMin = val1; wristMax = val2; Serial.println("Wrist Limits Updated"); break;
-    case 14: gripperMin = val1; gripperMax = val2; Serial.println("Gripper Limits Updated"); break;
+    // --- CONFIGURATION COMMANDS (Fixed to SAVE to EEPROM) ---
+    case 11: baseMin = val1; baseMax = val2; saveLimits(); Serial.println("Base Limits Saved"); break;
+    case 12: elbowMin = val1; elbowMax = val2; saveLimits(); Serial.println("Elbow Limits Saved"); break;
+    case 13: wristMin = val1; wristMax = val2; saveLimits(); Serial.println("Wrist Limits Saved"); break;
+    case 14: gripperMin = val1; gripperMax = val2; saveLimits(); Serial.println("Gripper Limits Saved"); break;
     
+    // --- NEW: Request Configuration ---
+    case 97: reportLimits(); break;
+
     // --- HOME COMMANDS ---
     case 98: loadHomePosition(); break; 
     case 99: saveHomePosition(); break; 

@@ -56,6 +56,8 @@ class RobotControllerApp:
             time.sleep(2) # Wait for Arduino to reset
             print(f"Connected to {SERIAL_PORT}")
 
+            self.ser.write(b"<97,0,0>")  # Request Status Update on Connect
+
             # This runs in the background and prints whatever Arduino says
             self.read_thread = threading.Thread(target=self.read_serial_data)
             self.read_thread.daemon = True # Kills thread when main app closes
@@ -98,7 +100,30 @@ class RobotControllerApp:
                                     print("System Synced with Robot State")
                                     
                                 self.update_telemetry_ui()
-                                
+
+                        elif line.startswith("CONFIG:"):
+                            # Format: minB, maxB, minE, maxE, minW, maxW, minG, maxG
+                            parts = line.split(":")[1].split(",")
+                            if len(parts) >= 8:
+                                # Helper to update GUI safely from thread
+                                def update_entries():
+                                    # Base
+                                    self.limit_entries[11]["min"].delete(0, tk.END); self.limit_entries[11]["min"].insert(0, parts[0])
+                                    self.limit_entries[11]["max"].delete(0, tk.END); self.limit_entries[11]["max"].insert(0, parts[1])
+                                    # Elbow
+                                    self.limit_entries[12]["min"].delete(0, tk.END); self.limit_entries[12]["min"].insert(0, parts[2])
+                                    self.limit_entries[12]["max"].delete(0, tk.END); self.limit_entries[12]["max"].insert(0, parts[3])
+                                    # Wrist
+                                    self.limit_entries[13]["min"].delete(0, tk.END); self.limit_entries[13]["min"].insert(0, parts[4])
+                                    self.limit_entries[13]["max"].delete(0, tk.END); self.limit_entries[13]["max"].insert(0, parts[5])
+                                    # Gripper
+                                    self.limit_entries[14]["min"].delete(0, tk.END); self.limit_entries[14]["min"].insert(0, parts[6])
+                                    self.limit_entries[14]["max"].delete(0, tk.END); self.limit_entries[14]["max"].insert(0, parts[7])
+                                    
+                                    print("UI Updated with stored limits from EEPROM")
+
+                                self.root.after(0, update_entries)  
+
                         elif line:
                             print(f"[ARDUINO]: {line}") 
                 except Exception as e:
@@ -112,16 +137,23 @@ class RobotControllerApp:
         elif motor_id == 3: self.target_wrist = angle
         elif motor_id == 4: self.target_gripper = angle
         
-        # Determine speed: Use override if provided, else use UI slider value
         speed_to_send = override_speed if override_speed is not None else self.speed_val
 
-        # Send to Arduino
         if self.ser and self.ser.is_open:
-            command = f"<{motor_id},{int(angle)},{speed_to_send}>"
-            self.ser.write(command.encode())
-            # print(f"Command: {command}") # Optional: Comment out to reduce spam
-
-            self.update_telemetry_ui()
+            try:
+                command = f"<{motor_id},{int(angle)},{speed_to_send}>"
+                self.ser.write(command.encode())
+                self.update_telemetry_ui()
+                
+            except serial.SerialTimeoutException:
+                print("Warning: Serial Timeout - Arduino busy or resetting?")
+                # Optional: Re-open the port if this happens too often
+                
+            except serial.SerialException as e:
+                print(f"Serial Error: {e}")
+                # If connection is totally lost, maybe stop the remote
+                self.remote_active = False
+                self.btn_remote.config(text="Enable Remote: OFF (Error)", bg="red")
 
     def send_limit_config(self, config_id, min_val, max_val):
         """Configuration Command: <ConfigID, Min, Max>"""
@@ -233,14 +265,14 @@ class RobotControllerApp:
             # Adjust axis numbers if needed based on your testing
             def deadzone(val): return 0.0 if abs(val) < 0.1 else val
 
-            axis_base   = deadzone(self.joystick.get_axis(0))
-            axis_elbow  = deadzone(self.joystick.get_axis(1)) * -1
-            axis_wrist  = deadzone(self.joystick.get_axis(3)) * -1
+            axis_base   = deadzone(self.joystick.get_axis(0)) * -1 
+            axis_elbow  = deadzone(self.joystick.get_axis(1))      
+            axis_wrist  = deadzone(self.joystick.get_axis(3)) 
             
             # Triggers logic
             val_l2 = (self.joystick.get_axis(4) + 1) / 2
             val_r2 = (self.joystick.get_axis(5) + 1) / 2
-            axis_gripper = val_r2 - val_l2 
+            axis_gripper = val_l2 - val_r2
 
             inputs = [axis_base, axis_elbow, axis_wrist, axis_gripper]
             current_targets = [self.target_base, self.target_elbow, self.target_wrist, self.target_gripper]
@@ -358,6 +390,8 @@ class RobotControllerApp:
         max_ent = ttk.Entry(row, width=5)
         max_ent.insert(0, "180")
         max_ent.pack(side=tk.LEFT, padx=5)
+
+        self.limit_entries[config_id] = {"min": min_ent, "max": max_ent}
         
         # Apply Button
         btn = ttk.Button(row, text="Apply", 
